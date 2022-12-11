@@ -1627,16 +1627,15 @@ static int spu_init_dependency_queue(struct RUU_station* load_ins, tick_t latenc
 }
 
 static int spu_add_instruct(struct RUU_station *dependent_inst, int queue_num){
-
   if(SPU[queue_num].instructs_in_queue == SPU_QUEUE_SIZE){
     //stall 
     return -1;
   }
   struct spu_queue queue = SPU[queue_num];
-  queue.spu[queue.instructs_in_queue] = *dependent_inst;
-  queue.insert_times[queue.instructs_in_queue] = sim_cycle;
-  queue.ideal_writeback_times[queue.instructs_in_queue] = SPU->finish + queue.instructs_in_queue + 1;
-  queue.instructs_in_queue++;
+  SPU[queue_num].spu[queue.instructs_in_queue] = *dependent_inst;
+  SPU[queue_num].insert_times[queue.instructs_in_queue] = sim_cycle;
+  SPU[queue_num].ideal_writeback_times[queue.instructs_in_queue] = SPU->finish + queue.instructs_in_queue + 1;
+  SPU[queue_num].instructs_in_queue++;
   return 0;
 } 
 static 
@@ -1710,10 +1709,9 @@ static void SPU_dump_ready_queues(){
   int times[number_of_ruus];
   int count = 0;
   for(int i = 0; i<number_of_queues_ready; i++){
-    struct spu_queue queue = SPU[ready_queues[i]];
-    for(int j = 0; j<queue.instructs_in_queue; j++){
-      ready_instructs[count] = queue.spu[j];
-      memset(&SPU[ready_queues[i]].spu[j],0,sizeof(queue.spu[j]));
+    for(int j = 0; j<SPU[ready_queues[i]].instructs_in_queue; j++){
+      ready_instructs[count] = SPU[ready_queues[i]].spu[j];
+      memset(&SPU[ready_queues[i]].spu[j],0,sizeof(SPU[ready_queues[i]].spu[j]));
       times[count] = SPU[ready_queues[i]].insert_times[j];
       SPU[ready_queues[i]].insert_times[j] = 0;
       SPU[ready_queues[i]].ideal_writeback_times[j] = 0;
@@ -1729,8 +1727,9 @@ static void SPU_dump_ready_queues(){
   for(int j = 0; j<count; j++){
     SPU_ready_queue[spu_ready_ins + j] = ready_instructs[j];
   }
-  ready_instructs = count;
-  return ready_instructs;
+  spu_ready_ins += count;
+  free(ready_instructs);
+  return;
 };
 
 static void SPU_pop(){
@@ -3943,6 +3942,7 @@ ruu_dispatch(void)
 
   made_check = FALSE;
   n_dispatched = 0;
+
   while (/* instruction decode B/W left? */
 	 n_dispatched < (ruu_decode_width * fetch_speed)
 	 /* RUU and LSQ not full? */
@@ -3952,6 +3952,7 @@ ruu_dispatch(void)
 	 /* on an acceptable trace path */
 	 && (ruu_include_spec || !spec_mode))
     {
+
       /* if issuing in-order, block until last op issues if inorder issue */
       if (ruu_inorder_issue
 	  && (last_op.rs && RSLINK_VALID(&last_op)
@@ -3963,6 +3964,7 @@ ruu_dispatch(void)
 
       /* get the next instruction from the IFETCH -> DISPATCH queue */
       if(spu_ready_ins <=0){
+        myfprintf(stderr, "taking ins from fetch\n");
         inst = fetch_data[fetch_head].IR;
         regs.regs_PC = fetch_data[fetch_head].regs_PC;
         pred_PC = fetch_data[fetch_head].pred_PC;
@@ -3970,7 +3972,7 @@ ruu_dispatch(void)
         stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
         pseq = fetch_data[fetch_head].ptrace_seq;
       }else{
-        fprintf(stderr, "line 3970\n");
+        myfprintf(stderr, "taking ins from spu\n");
         inst = SPU_ready_queue[0].IR;
         regs.regs_PC = SPU_ready_queue[0].PC;
         pred_PC = SPU_ready_queue[0].pred_PC;
@@ -4131,13 +4133,12 @@ ruu_dispatch(void)
         // unsigned int source1 = ((SPU[i].spu[j].inst >> 21) & 0x1f);
         // unsigned int source2 = ((SPU[i].spu[j].inst >> 16) & 0x1f);
         // unsigned int dest = (SPU[i].spu[j].inst & 0x1f)
-        myfprintf(stderr," in1 = %s\n", in1);
-        for(int k = 0; k<sizeof(SPU[i].spu[j].onames)/sizeof(struct RS_link); k++ ){
-          if(SPU[i].spu[j].onames[k] != 0){
-            if(in1 == SPU[i].spu[j].onames[k] || in2 == SPU[i].spu[j].onames[k] || in3 == SPU[i].spu[j].onames[k])
+
+            if(in1 == SPU[i].spu[j].onames[0] || in2 == SPU[i].spu[j].onames[0]){
               dependency_found = 1;
+            }
           }
-        }
+    }
 
         if (dependency_found) {
           rs = (struct RUU_station *) malloc(sizeof(struct RUU_station));
@@ -4159,16 +4160,12 @@ ruu_dispatch(void)
           rs->ptrace_seq = pseq;
 
           if(spu_add_instruct(rs, i) <0){
+            myfprintf(stderr, "dependency foun\n");
             dependency_found = 0;
+          }else{
+            continue;
           }
-          break;
         }
-      }
-    }
-
-    if (dependency_found) {
-      continue;
-    }
 
       /* is this a NOP */
       if (op != MD_NOP_OP)
@@ -4822,30 +4819,38 @@ sim_main(void)
       ptrace_newcycle(sim_cycle);
 
       /* commit entries from RUU/LSQ to architected register file */
+
       ruu_commit();
 
       /* service function unit release events */
+
       ruu_release_fu();
 
       /* ==> may have ready queue entries carried over from previous cycles */
 
       /* service result completions, also readies dependent operations */
       /* ==> inserts operations into ready queue --> register deps resolved */
+
       ruu_writeback();
 
       if (!bugcompat_mode)
 	{
 	  /* try to locate memory operations that are ready to execute */
 	  /* ==> inserts operations into ready queue --> mem deps resolved */
+
+
 	  lsq_refresh();
 
 	  /* issue operations ready to execute from a previous cycle */
 	  /* <== drains ready queue <-- ready operations commence execution */
+  
+
 	  ruu_issue();
 	}
 
       /* decode and dispatch new operations */
       /* ==> insert ops w/ no deps or all regs ready --> reg deps resolved */
+
       ruu_dispatch();
 
       if (bugcompat_mode)
@@ -4860,8 +4865,9 @@ sim_main(void)
 	}
 
       /* call instruction fetch unit if it is not blocked */
-      if (!ruu_fetch_issue_delay)
+      if (!ruu_fetch_issue_delay){  
 	ruu_fetch();
+    }
       else
 	ruu_fetch_issue_delay--;
 
