@@ -2613,6 +2613,7 @@ ruu_issue(void)
   int i, load_lat, tlb_lat, n_issued;
   struct RS_link *node, *next_node;
   struct res_template *fu;
+  fprintf(stderr, "helloworld \n"); 
 
   /* FIXME: could be a little more efficient when scanning the ready queue */
 

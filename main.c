@@ -228,6 +228,7 @@ exit_now(int exit_code)
 int
 main(int argc, char **argv, char **envp)
 {
+  printf("hello world");
   char *s;
   int i, exit_code;
 

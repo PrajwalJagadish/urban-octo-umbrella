@@ -1543,9 +1543,9 @@ struct RUU_station {
 #define NUM_SPU_QUEUES 10
 
 struct spu_queue{
-  struct RUU_station* spu[SPU_QUEUE_SIZE];
-  int insert_times[SPU_QUEUE_SIZE];
-  int ideal_writeback_times[SPU_QUEUE_SIZE];
+  struct RUU_station *spu;
+  int *insert_times;
+  int *ideal_writeback_times;
   int initalized;
   int instructs_in_queue;
   tick_t start, finish;
@@ -1565,6 +1565,8 @@ static struct spu_queue *SPU;
 static int spu_queues_in_use;
 static unsigned int *miss_queue;
 static int need_stall;
+static struct RUU_station *SPU_ready_queue;
+static int spu_ready_ins;
 
 // static void
 // dependency_tree_init(void) {
@@ -1593,40 +1595,45 @@ static int need_stall;
 
 static void
 spu_init(void){
+
   SPU = calloc(NUM_SPU_QUEUES, sizeof(struct spu_queue));
   if (!SPU)
     fatal("out of virtual memory");
-
+  for(int i = 0; i<NUM_SPU_QUEUES; i++){
+    SPU[i].spu = calloc(SPU_QUEUE_SIZE, sizeof(struct RUU_station));
+    SPU[i].insert_times = calloc(SPU_QUEUE_SIZE, sizeof(int));
+    SPU[i].ideal_writeback_times = calloc(SPU_QUEUE_SIZE, sizeof(int));
+  }
+  spu_ready_ins = 0;
+  SPU_ready_queue = calloc(SPU_QUEUE_SIZE*NUM_SPU_QUEUES, sizeof(struct RUU_station));
   spu_queues_in_use = 0;
 }
 
 static int spu_init_dependency_queue(struct RUU_station* load_ins, tick_t latency){
-
   int next_available_queue;
-  for(int next_available_queue = 0; next_available_queue<SPU_QUEUE_SIZE; next_available_queue++){
+  for(next_available_queue = 0; next_available_queue<NUM_SPU_QUEUES; next_available_queue++){
     if(SPU[next_available_queue].initalized == 0)
       break;
   }
-
-  struct spu_queue available_queue = SPU[next_available_queue];
-  available_queue.initalized = 1;
-  available_queue.spu[0] = load_ins;
-  available_queue.insert_times[0] = sim_cycle;
-  available_queue.ideal_writeback_times[0] = sim_cycle + latency + 1;
-  available_queue.instructs_in_queue = 1; 
-  available_queue.start = sim_cycle;
-  available_queue.finish = sim_cycle + latency;
+  SPU[next_available_queue].initalized = 1;
+  SPU[next_available_queue].spu[0] = *load_ins;
+  SPU[next_available_queue].insert_times[0] = sim_cycle;
+  SPU[next_available_queue].ideal_writeback_times[0] = sim_cycle + latency + 1;
+  SPU[next_available_queue].instructs_in_queue = 1; 
+  SPU[next_available_queue].start = sim_cycle;
+  SPU[next_available_queue].finish = sim_cycle + latency;
   spu_queues_in_use++;
   return next_available_queue;
 }
 
 static int spu_add_instruct(struct RUU_station *dependent_inst, int queue_num){
+
   if(SPU[queue_num].instructs_in_queue == SPU_QUEUE_SIZE){
     //stall 
     return -1;
   }
   struct spu_queue queue = SPU[queue_num];
-  queue.spu[queue.instructs_in_queue] = dependent_inst;
+  queue.spu[queue.instructs_in_queue] = *dependent_inst;
   queue.insert_times[queue.instructs_in_queue] = sim_cycle;
   queue.ideal_writeback_times[queue.instructs_in_queue] = SPU->finish + queue.instructs_in_queue + 1;
   queue.instructs_in_queue++;
@@ -1670,10 +1677,10 @@ void quicksort(struct RUU_station *ruus[], int insert_times[] ,int first,int las
    }
 }
 
-static struct RUU_station** SPU_dump_ready_queues(){
+static void SPU_dump_ready_queues(){
   int number_of_queues_ready = 0;
   int number_of_ruus = 0;
-  int* ready_queues;
+  int* ready_queues = NULL;
 
   for(int i = 0; i<NUM_SPU_QUEUES; i++){
     if(SPU[i].initalized && SPU[i].finish == sim_cycle){
@@ -1691,35 +1698,47 @@ static struct RUU_station** SPU_dump_ready_queues(){
         number_of_queues_ready++;
       }
     }
+    
   }
-
-  if(ready_queues == NULL){
-    return NULL;
+  // myfprintf(stderr, "%d quyes read\n", number_of_queues_ready);
+  spu_queues_in_use -= number_of_queues_ready;
+  if(number_of_queues_ready == 0){
+    return;
   }
-  struct RUU_station **ready_instructs ;
-  *ready_instructs = (struct RUU_station*) malloc(number_of_ruus*sizeof(struct RUU_station*));
+  struct RUU_station *ready_instructs ;
+  ready_instructs = (struct RUU_station*) malloc(number_of_ruus*sizeof(struct RUU_station));
   int times[number_of_ruus];
   int count = 0;
   for(int i = 0; i<number_of_queues_ready; i++){
     struct spu_queue queue = SPU[ready_queues[i]];
     for(int j = 0; j<queue.instructs_in_queue; j++){
       ready_instructs[count] = queue.spu[j];
-      queue.spu[j] = NULL;
-      times[count] = queue.insert_times[j];
-      queue.insert_times[j] = 0;
-      queue.ideal_writeback_times[j] = 0;
+      memset(&SPU[ready_queues[i]].spu[j],0,sizeof(queue.spu[j]));
+      times[count] = SPU[ready_queues[i]].insert_times[j];
+      SPU[ready_queues[i]].insert_times[j] = 0;
+      SPU[ready_queues[i]].ideal_writeback_times[j] = 0;
       count++;
     }
-    queue.initalized = 0;
-    queue.instructs_in_queue = 0; 
-    queue.start = 0;
-    queue.finish = 0;
+    SPU[ready_queues[i]].initalized = 0;
+    SPU[ready_queues[i]].instructs_in_queue = 0; 
+    SPU[ready_queues[i]].start = 0;
+    SPU[ready_queues[i]].finish = 0;
   }
   quicksort(ready_instructs, times, 0, number_of_ruus-1);
 
-  free(ready_queues);
+  for(int j = 0; j<count; j++){
+    SPU_ready_queue[spu_ready_ins + j] = ready_instructs[j];
+  }
+  ready_instructs = count;
   return ready_instructs;
 };
+
+static void SPU_pop(){
+  for(int i = 0; i<spu_ready_ins-1; i++){
+    memcpy(&SPU_ready_queue[i], &SPU_ready_queue[i+1], i++);
+  }
+  spu_ready_ins--;
+}
 
 /* allocate and initialize register update unit (RUU) */
 static void
@@ -2373,8 +2392,10 @@ ruu_commit(void)
 		      lat =
 			cache_access(cache_dl1, Write, (LSQ[LSQ_head].addr&~3),
 				     NULL, 4, sim_cycle, NULL, NULL);
-		      if (lat > cache_dl1_lat)
+		      if (lat > cache_dl1_lat){
+            
 			events |= PEV_CACHEMISS;
+          }
 		    }
 
 		  /* all loads and stores must to access D-TLB */
@@ -2904,6 +2925,7 @@ ruu_issue(void)
 			    }
 
 			  /* was the value store forwared from the LSQ? */
+      
 			  if (!load_lat)
 			    {
 			      int valid_addr = MD_VALID_ADDR(rs->addr);
@@ -2921,8 +2943,10 @@ ruu_issue(void)
 						 sim_cycle, NULL, NULL);
           if ((load_lat > cache_dl1_lat) && ((MD_OP_FLAGS(rs->op) & (F_MEM|F_LOAD))
 			      == (F_MEM|F_LOAD))) {
-            if(spu_queues_in_use <SPU_QUEUE_SIZE)
+            if(spu_queues_in_use <NUM_SPU_QUEUES)
+                
                 spu_init_dependency_queue(rs, load_lat);
+
               }
 
 				  if (load_lat > cache_dl1_lat)
@@ -3894,6 +3918,7 @@ ruu_dispatch(void)
   int i;
   int n_dispatched;			/* total insts dispatched */
   md_inst_t inst;			/* actual instruction bits */
+  unsigned int ptrace_seq;
   enum md_opcode op;			/* decoded opcode enum */
   int out1, out2, in1, in2, in3;	/* output/input register names */
   md_addr_t target_PC;			/* actual next/target PC address */
@@ -3910,6 +3935,7 @@ ruu_dispatch(void)
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
   word_t temp_word = 0;			/* " ditto " */
+  SPU_dump_ready_queues();
 #ifdef HOST_HAS_QWORD
   qword_t temp_qword = 0;		/* " ditto " */
 #endif /* HOST_HAS_QWORD */
@@ -3936,12 +3962,23 @@ ruu_dispatch(void)
 	}
 
       /* get the next instruction from the IFETCH -> DISPATCH queue */
-      inst = fetch_data[fetch_head].IR;
-      regs.regs_PC = fetch_data[fetch_head].regs_PC;
-      pred_PC = fetch_data[fetch_head].pred_PC;
-      dir_update_ptr = &(fetch_data[fetch_head].dir_update);
-      stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
-      pseq = fetch_data[fetch_head].ptrace_seq;
+      if(spu_ready_ins <=0){
+        inst = fetch_data[fetch_head].IR;
+        regs.regs_PC = fetch_data[fetch_head].regs_PC;
+        pred_PC = fetch_data[fetch_head].pred_PC;
+        dir_update_ptr = &(fetch_data[fetch_head].dir_update);
+        stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
+        pseq = fetch_data[fetch_head].ptrace_seq;
+      }else{
+        fprintf(stderr, "line 3970\n");
+        inst = SPU_ready_queue[0].IR;
+        regs.regs_PC = SPU_ready_queue[0].PC;
+        pred_PC = SPU_ready_queue[0].pred_PC;
+        dir_update_ptr = &(SPU_ready_queue[0].dir_update);
+        stack_recover_idx = SPU_ready_queue[0].stack_recover_idx;
+        pseq = SPU_ready_queue[0].ptrace_seq;
+        SPU_pop();
+      }
 
       /* decode the inst */
       MD_SET_OPCODE(op, inst);
@@ -4087,16 +4124,17 @@ ruu_dispatch(void)
 
     //check here for dependences in instructions
     int  dependency_found = 0;
+    
     for (int i = 0; (i < NUM_SPU_QUEUES) && !dependency_found; i++) {
       for (int j = 0; j < SPU[i].instructs_in_queue; j++) {
         
         // unsigned int source1 = ((SPU[i].spu[j].inst >> 21) & 0x1f);
         // unsigned int source2 = ((SPU[i].spu[j].inst >> 16) & 0x1f);
         // unsigned int dest = (SPU[i].spu[j].inst & 0x1f)
-
-        for(int k = 0; k<sizeof(SPU[i].spu[j]->onames)/sizeof(struct RS_link); k++ ){
-          if(SPU[i].spu[j]->onames[k] != 0){
-            if(in1 == SPU[i].spu[j]->onames[k] && in2 == SPU[i].spu[j]->onames[k] && in3 == SPU[i].spu[j]->onames[k])
+        myfprintf(stderr," in1 = %s\n", in1);
+        for(int k = 0; k<sizeof(SPU[i].spu[j].onames)/sizeof(struct RS_link); k++ ){
+          if(SPU[i].spu[j].onames[k] != 0){
+            if(in1 == SPU[i].spu[j].onames[k] || in2 == SPU[i].spu[j].onames[k] || in3 == SPU[i].spu[j].onames[k])
               dependency_found = 1;
           }
         }
@@ -4121,7 +4159,7 @@ ruu_dispatch(void)
           rs->ptrace_seq = pseq;
 
           if(spu_add_instruct(rs, i) <0){
-            //stall 
+            dependency_found = 0;
           }
           break;
         }
@@ -4758,7 +4796,6 @@ sim_main(void)
     }
 
   fprintf(stderr, "sim: ** starting performance simulation **\n");
-
   /* set up timing simulation entry state */
   fetch_regs_PC = regs.regs_PC - sizeof(md_inst_t);
   fetch_pred_PC = regs.regs_PC;
