@@ -3939,7 +3939,7 @@ ruu_dispatch(void)
   byte_t temp_byte = 0;			/* temp variable for spec mem access */
   half_t temp_half = 0;			/* " ditto " */
   word_t temp_word = 0;			/* " ditto " */
-  SPU_dump_ready_queues();
+  //SPU_dump_ready_queues();
 #ifdef HOST_HAS_QWORD
   qword_t temp_qword = 0;		/* " ditto " */
 #endif /* HOST_HAS_QWORD */
@@ -3968,7 +3968,7 @@ ruu_dispatch(void)
 	}
         /* get the next instruction from the IFETCH -> DISPATCH queue */
       if(spu_ready_ins <=0){
-        myfprintf(stderr,"taken from  fetch\n");
+        //myfprintf(stderr,"taken from  fetch\n");
         inst = fetch_data[fetch_head].IR;
         regs.regs_PC = fetch_data[fetch_head].regs_PC;
         pred_PC = fetch_data[fetch_head].pred_PC;
@@ -3976,7 +3976,7 @@ ruu_dispatch(void)
         stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
         pseq = fetch_data[fetch_head].ptrace_seq;
       }else{
-        myfprintf(stderr,"taken from  spu\n");
+        //myfprintf(stderr,"taken from  spu\n");
         inst = SPU_ready_queue[0].IR;
         regs.regs_PC = SPU_ready_queue[0].PC;
         pred_PC = SPU_ready_queue[0].pred_PC;
@@ -4075,10 +4075,8 @@ ruu_dispatch(void)
           fprintf(stderr, "\n");
           /* fflush(stderr); */
         }
-      enum md_fault_type _fault;
 
-
-      if (fault != md_fault_none)
+	if (fault != md_fault_none)
     	fatal("non-speculative fault (%d) detected @ 0x%08p",
 	      fault, regs.regs_PC);
 
