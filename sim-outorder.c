@@ -1539,7 +1539,7 @@ struct RUU_station {
      enforcing memory dependencies) */
   int idep_ready[MAX_IDEPS];		/* input operand ready? */
 };
-#define SPU_QUEUE_SIZE  10
+#define SPU_QUEUE_SIZE  100
 #define NUM_SPU_QUEUES 10
 
 struct spu_queue{
@@ -1631,11 +1631,11 @@ static int spu_add_instruct(struct RUU_station *dependent_inst, int queue_num){
     //stall 
     return -1;
   }
-  struct spu_queue queue = SPU[queue_num];
-  SPU[queue_num].spu[queue.instructs_in_queue] = *dependent_inst;
-  SPU[queue_num].insert_times[queue.instructs_in_queue] = sim_cycle;
-  SPU[queue_num].ideal_writeback_times[queue.instructs_in_queue] = SPU->finish + queue.instructs_in_queue + 1;
+  SPU[queue_num].spu[SPU[queue_num].instructs_in_queue] = *dependent_inst;
+  SPU[queue_num].insert_times[SPU[queue_num].instructs_in_queue] = sim_cycle;
+  SPU[queue_num].ideal_writeback_times[SPU[queue_num].instructs_in_queue] = SPU->finish +  SPU[queue_num].instructs_in_queue + 1;
   SPU[queue_num].instructs_in_queue++;
+  myfprintf(stderr, "SPU[queue_num].instructs_in_queue: %d, \n",SPU[queue_num].instructs_in_queue);
   return 0;
 } 
 static 
@@ -1709,6 +1709,7 @@ static void SPU_dump_ready_queues(){
   int times[number_of_ruus];
   int count = 0;
   for(int i = 0; i<number_of_queues_ready; i++){
+    myfprintf(stderr,"SPU[ready_queues[i]].instructs_in_queue: %d\n", SPU[ready_queues[i]].instructs_in_queue);
     for(int j = 0; j<SPU[ready_queues[i]].instructs_in_queue; j++){
       ready_instructs[count] = SPU[ready_queues[i]].spu[j];
       memset(&SPU[ready_queues[i]].spu[j],0,sizeof(SPU[ready_queues[i]].spu[j]));
@@ -1727,6 +1728,7 @@ static void SPU_dump_ready_queues(){
   for(int j = 0; j<count; j++){
     SPU_ready_queue[spu_ready_ins + j] = ready_instructs[j];
   }
+  myfprintf(stderr,"count: %d\n", count);  
   spu_ready_ins += count;
   free(ready_instructs);
   return;
@@ -2924,7 +2926,7 @@ ruu_issue(void)
 			    }
 
 			  /* was the value store forwared from the LSQ? */
-      
+        int miss =0;
 			  if (!load_lat)
 			    {
 			      int valid_addr = MD_VALID_ADDR(rs->addr);
@@ -2940,16 +2942,11 @@ ruu_issue(void)
 				    cache_access(cache_dl1, Read,
 						 (rs->addr & ~3), NULL, 4,
 						 sim_cycle, NULL, NULL);
-          if ((load_lat > cache_dl1_lat) && ((MD_OP_FLAGS(rs->op) & (F_MEM|F_LOAD))
-			      == (F_MEM|F_LOAD))) {
-            if(spu_queues_in_use <NUM_SPU_QUEUES)
-                
-                spu_init_dependency_queue(rs, load_lat);
 
-              }
-
-				  if (load_lat > cache_dl1_lat)
+				  if (load_lat > cache_dl1_lat){
+            miss = 1;
 				    events |= PEV_CACHEMISS;
+          }
 				}
 			      else
 				{
@@ -2966,13 +2963,21 @@ ruu_issue(void)
 			      tlb_lat =
 				cache_access(dtlb, Read, (rs->addr & ~3),
 					     NULL, 4, sim_cycle, NULL, NULL);
-			      if (tlb_lat > 1)
+			      if (tlb_lat > 1){
 				events |= PEV_TLBMISS;
+            miss =1;
+            }
 
 			      /* D-cache/D-TLB accesses occur in parallel */
 			      load_lat = MAX(tlb_lat, load_lat);
 			    }
+        if ((load_lat > cache_dl1_lat) && ((MD_OP_FLAGS(rs->op) & (F_MEM|F_LOAD))
+			      == (F_MEM|F_LOAD))) {
+            if(spu_queues_in_use <NUM_SPU_QUEUES)
+                
+                spu_init_dependency_queue(rs, load_lat);
 
+              }
 			  /* use computed cache access latency */
 			  eventq_queue_event(rs, sim_cycle + load_lat);
 
@@ -3948,7 +3953,7 @@ ruu_dispatch(void)
 	 /* RUU and LSQ not full? */
 	 && RUU_num < RUU_size && LSQ_num < LSQ_size
 	 /* insts still available from fetch unit? */
-	 && fetch_num != 0
+	 && (fetch_num != 0 || spu_ready_ins != 0)
 	 /* on an acceptable trace path */
 	 && (ruu_include_spec || !spec_mode))
     {
@@ -3961,10 +3966,9 @@ ruu_dispatch(void)
 	  /* stall until last operation is ready to issue */
 	  break;
 	}
-
-      /* get the next instruction from the IFETCH -> DISPATCH queue */
+        /* get the next instruction from the IFETCH -> DISPATCH queue */
       if(spu_ready_ins <=0){
-        myfprintf(stderr, "taking ins from fetch\n");
+        myfprintf(stderr,"taken from  fetch\n");
         inst = fetch_data[fetch_head].IR;
         regs.regs_PC = fetch_data[fetch_head].regs_PC;
         pred_PC = fetch_data[fetch_head].pred_PC;
@@ -3972,7 +3976,7 @@ ruu_dispatch(void)
         stack_recover_idx = fetch_data[fetch_head].stack_recover_idx;
         pseq = fetch_data[fetch_head].ptrace_seq;
       }else{
-        myfprintf(stderr, "taking ins from spu\n");
+        myfprintf(stderr,"taken from  spu\n");
         inst = SPU_ready_queue[0].IR;
         regs.regs_PC = SPU_ready_queue[0].PC;
         pred_PC = SPU_ready_queue[0].pred_PC;
@@ -4017,7 +4021,6 @@ ruu_dispatch(void)
 
       /* set default fault - none */
       fault = md_fault_none;
-
       /* more decoding and execution */
       switch (op)
 	{
@@ -4049,7 +4052,7 @@ ruu_dispatch(void)
 	    if (!spec_mode)						\
 	      fault = (FAULT);						\
 	    /* else, spec fault, ignore it, always terminate exec... */	\
-	    break;							\
+	    break;	  						\
 	  }
 #include "machine.def"
 	default:
@@ -4072,9 +4075,11 @@ ruu_dispatch(void)
           fprintf(stderr, "\n");
           /* fflush(stderr); */
         }
+      enum md_fault_type _fault;
+
 
       if (fault != md_fault_none)
-	fatal("non-speculative fault (%d) detected @ 0x%08p",
+    	fatal("non-speculative fault (%d) detected @ 0x%08p",
 	      fault, regs.regs_PC);
 
       /* update memory access stats */
@@ -4160,7 +4165,7 @@ ruu_dispatch(void)
           rs->ptrace_seq = pseq;
 
           if(spu_add_instruct(rs, i) <0){
-            myfprintf(stderr, "dependency foun\n");
+            //myfprintf(stderr,"queue filled\n");
             dependency_found = 0;
           }else{
             continue;
